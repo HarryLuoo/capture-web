@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Capture</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#111214" media="(prefers-color-scheme: dark)">
+<style>
+:root { --bg:#fff; --fg:#16181c; --dim:#6b7078; --line:#e6e8eb; --card:#f4f5f7; --accent:#3d6ef2; --bad:#d93025; }
+@media (prefers-color-scheme: dark) { :root { --bg:#111214; --fg:#eceef1; --dim:#8b9099; --line:#26292e; --card:#1b1d21; } }
+* { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:16px -apple-system,system-ui,"Segoe UI",sans-serif; }
+body { display:flex; flex-direction:column; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+[hidden] { display:none !important; }
+#signin { margin:auto; width:min(360px,100% - 48px); display:flex; flex-direction:column; gap:12px; }
+input,textarea { font:inherit; color:inherit; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px; width:100%; outline:none; }
+input:focus,textarea:focus { border-color:var(--accent); }
+button { font:inherit; color:inherit; border:0; background:none; cursor:pointer; }
+.primary { background:var(--accent); color:#fff; border-radius:12px; height:52px; font-weight:600; }
+#err { color:var(--bad); font-size:13px; min-height:18px; }
+#bar { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; padding:16px 16px 6px; }
+.big { background:var(--card); border-radius:18px; height:104px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; font-weight:600; }
+.big svg { width:30px; height:30px; stroke:currentColor; fill:none; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+.big:active { opacity:.6; }
+.big.rec { background:var(--accent); color:#fff; animation:pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity:.7; } }
+#lib { align-self:flex-end; margin:0 18px 6px; color:var(--dim); font-size:13px; }
+#list { flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:0 16px 96px; }
+.day { color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.06em; margin:18px 2px 6px; }
+.row { display:flex; align-items:center; gap:12px; padding:10px 2px; border-bottom:1px solid var(--line); }
+.thumb { width:44px; height:44px; border-radius:10px; background:var(--card); flex:none; object-fit:cover; display:flex; align-items:center; justify-content:center; color:var(--dim); font-size:11px; }
+.txt { flex:1; min-width:0; }
+.txt div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.meta { color:var(--dim); font-size:12px; }
+.dot { width:9px; height:9px; border-radius:50%; border:1.5px solid var(--dim); flex:none; }
+.dot.on { background:var(--accent); border-color:var(--accent); }
+#dock { position:fixed; left:0; right:0; bottom:0; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:var(--bg); border-top:1px solid var(--line); display:flex; gap:8px; align-items:flex-end; }
+#dock textarea { resize:none; max-height:110px; }
+#send { background:var(--accent); color:#fff; border-radius:12px; width:52px; height:50px; flex:none; font-size:20px; }
+#toast { position:fixed; left:50%; bottom:calc(84px + env(safe-area-inset-bottom)); transform:translateX(-50%); background:var(--fg); color:var(--bg); padding:9px 14px; border-radius:999px; font-size:13px; max-width:86%; }
+</style>
+</head>
+<body>
+<form id="signin" hidden>
+  <input id="token" type="password" placeholder="Paste inbox token" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <div id="err"></div>
+  <button class="primary">Connect</button>
+</form>
+
+<main id="home" hidden style="display:flex;flex-direction:column;flex:1;min-height:0">
+  <div id="bar">
+    <button class="big" id="photo"><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Photo</button>
+    <button class="big" id="speak"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span id="speakLabel">Speak</span></button>
+    <button class="big" id="note"><svg viewBox="0 0 24 24"><path d="M4 20l1-5L16 4l4 4L9 19z"/></svg>Note</button>
+  </div>
+  <button id="lib">from library</button>
+  <div id="list"></div>
+</main>
+
+<div id="dock" hidden>
+  <textarea id="text" rows="1"></textarea>
+  <button id="send">↑</button>
+</div>
+<div id="toast" hidden></div>
+<input id="cam" type="file" accept="image/*" capture="environment" hidden>
+<input id="pick" type="file" accept="image/*" hidden>
+
+<script>
+const REPO = 'HarryLuoo/capture-inbox', API = 'https://api.github.com/repos/' + REPO;
+const $ = id => document.getElementById(id);
+let token = localStorage.getItem('token');
+
+// ---------- small helpers
+const B32 = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+function ulid() {
+  let t = Date.now(), s = '';
+  for (let i = 0; i < 10; i++) { s = B32[t % 32] + s; t = Math.floor(t / 32); }
+  for (const b of crypto.getRandomValues(new Uint8Array(16))) s += B32[b % 32];
+  return s;
+}
+function device() {
+  const u = navigator.userAgent;
+  return /iPhone|iPad/.test(u) || (/Mac/.test(u) && navigator.maxTouchPoints > 1) ? 'iphone' : /Mac/.test(u) ? 'mac' : /Win/.test(u) ? 'win-web' : 'web';
+}
+const headers = t => ({ Authorization: 'Bearer ' + t, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' });
+const b64 = blob => new Promise((ok, no) => { const r = new FileReader(); r.onload = () => ok(r.result.split(',')[1]); r.onerror = no; r.readAsDataURL(blob); });
+let toastTimer;
+function toast(m) { $('toast').textContent = m; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 3000); }
+
+// ---------- local queue (IndexedDB): every capture is saved here first, then uploaded
+const db = new Promise((ok, no) => {
+  const r = indexedDB.open('capture', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('q', { keyPath: 'id' });
+  r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+});
+const tx = async (mode, f) => { const d = await db; return new Promise((ok, no) => { const t = d.transaction('q', mode), q = f(t.objectStore('q')); t.oncomplete = () => ok(q && q.result); t.onerror = () => no(t.error); }); };
+const qAll = () => tx('readonly', s => s.getAll());
+const qPut = rec => tx('readwrite', s => s.put(rec));
+
+async function add(kind, { blob = null, ext = null, text = null } = {}) {
+  const id = ulid();
+  await qPut({ id, created_at: new Date().toISOString(), device: device(), kind, text, blob, ext, synced: false });
+  render(); drain();
+}
+
+async function put(path, content, id) {
+  const r = await fetch(API + '/contents/' + path, { method: 'PUT', headers: headers(token), body: JSON.stringify({ message: 'capture ' + id, content }) });
+  if (r.ok) return;
+  if (r.status === 422) return;                    // already there from an earlier attempt
+  if (r.status === 401) { signOut(); }
+  throw new Error('GitHub answered ' + r.status);
+}
+let draining = false;
+async function drain() {
+  if (draining || !token || !navigator.onLine) return;
+  draining = true;
+  try {
+    for (const c of (await qAll()).filter(c => !c.synced).sort((a, b) => a.id < b.id ? -1 : 1)) {
+      let file_path = null;
+      if (c.blob) { file_path = `captures/${c.id}.${c.ext}`; await put(file_path, await b64(c.blob), c.id); }
+      const row = { id: c.id, created_at: c.created_at, device: c.device, kind: c.kind, file_path, text: c.text, ctx: null };
+      await put(`captures/${c.id}.json`, btoa(unescape(encodeURIComponent(JSON.stringify(row)))), c.id);
+      await qPut({ ...c, synced: true });
+      render();
+    }
+  } catch (e) { toast('Waiting to upload: ' + e.message); setTimeout(drain, 30000); }
+  finally { draining = false; }
+}
+addEventListener('online', drain);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) { drain(); loadRemote(); } });
+
+// ---------- capture
+function shrink(file) {   // JPEG, long edge <= 2000 px
+  return new Promise(ok => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 2000 / Math.max(img.width, img.height)), c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => ok(b || file), 'image/jpeg', 0.8);
+    };
+    img.onerror = () => ok(file);
+    img.src = url;
+  });
+}
+let pending = null, autoTimer = null;   // a photo waiting for its optional words
+async function gotImage(input) {
+  const f = input.files[0]; input.value = '';
+  if (!f) return;
+  pending = { blob: await shrink(f), ext: 'jpg' };
+  openDock('add a few words', true);
+}
+$('photo').onclick = () => $('cam').click();
+$('lib').onclick = () => $('pick').click();
+$('cam').onchange = e => gotImage(e.target);
+$('pick').onchange = e => gotImage(e.target);
+
+function openDock(hint, auto) {
+  $('text').value = ''; $('text').placeholder = hint; $('dock').hidden = false; $('text').focus();
+  clearTimeout(autoTimer);
+  if (auto) autoTimer = setTimeout(commit, 4000);
+}
+function commit() {
+  clearTimeout(autoTimer);
+  const t = $('text').value.trim();
+  $('dock').hidden = true; $('text').blur();
+  if (pending) { add('photo', { ...pending, text: t || null }); pending = null; }
+  else if (t) add('note', { text: t });
+}
+$('text').oninput = () => { if (pending) { clearTimeout(autoTimer); autoTimer = setTimeout(commit, 4000); } $('text').style.height = 'auto'; $('text').style.height = $('text').scrollHeight + 'px'; };
+$('text').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); } if (e.key === 'Escape') { if (!pending) { $('dock').hidden = true; } else commit(); } };
+$('send').onclick = commit;
+$('note').onclick = () => { if (pending) commit(); openDock('note', false); };
+
+let rec = null, chunks = [], recStart = 0, tick = null;
+$('speak').onclick = async () => {
+  if (rec) { rec.stop(); return; }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { noiseSuppression: false, autoGainControl: true, echoCancellation: false } });
+    const mp4 = MediaRecorder.isTypeSupported('audio/mp4');
+    rec = new MediaRecorder(stream, { mimeType: mp4 ? 'audio/mp4' : 'audio/webm', audioBitsPerSecond: 64000 });
+    chunks = []; recStart = Date.now();
+    rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+    rec.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      clearInterval(tick); $('speak').classList.remove('rec'); $('speakLabel').textContent = 'Speak';
+      const blob = new Blob(chunks, { type: rec.mimeType }); rec = null;
+      if (blob.size > 2000) add('voice', { blob, ext: mp4 ? 'm4a' : 'webm' });
+    };
+    rec.start(1000);
+    $('speak').classList.add('rec');
+    tick = setInterval(() => $('speakLabel').textContent = 'Stop ' + Math.floor((Date.now() - recStart) / 1000) + 's', 250);
+  } catch (e) { toast('Microphone: ' + e.message); }
+};
+
+// ---------- previous entries: this device's queue + what other devices sent + the kept log
+let remote = [];
+const raw = async path => { const r = await fetch(API + '/contents/' + path, { headers: { ...headers(token), Accept: 'application/vnd.github.raw+json' } }); return r.ok ? r.text() : null; };
+async function loadRemote() {
+  if (!token || !navigator.onLine) return;
+  try {
+    const out = [], now = new Date();
+    for (const d of [now, new Date(now.getFullYear(), now.getMonth() - 1, 1)]) {
+      const t = await raw(`log/${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}.jsonl`);
+      if (t) for (const l of t.split('\n')) if (l.trim()) try { out.push({ ...JSON.parse(l), synced: true, filed: true }); } catch {}
+    }
+    const r = await fetch(API + '/contents/captures', { headers: headers(token) });
+    if (r.ok) for (const f of (await r.json()).filter(f => f.name.endsWith('.json')).slice(-40)) {
+      const t = await raw('captures/' + f.name);
+      if (t) try { out.push({ ...JSON.parse(t), synced: true }); } catch {}
+    }
+    remote = out; render();
+  } catch {}
+}
+const urls = new Map();
+async function render() {
+  const mine = await qAll(), seen = new Set(mine.map(c => c.id));
+  const all = [...mine, ...remote.filter(c => !seen.has(c.id))].sort((a, b) => a.id < b.id ? 1 : -1).slice(0, 300);
+  const list = $('list'); list.textContent = '';
+  let day = '';
+  for (const c of all) {
+    const d = new Date(c.created_at), label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    if (label !== day) { day = label; const h = document.createElement('div'); h.className = 'day'; h.textContent = label; list.append(h); }
+    const row = document.createElement('div'); row.className = 'row';
+    let th;
+    if (c.blob && c.kind !== 'voice') { th = document.createElement('img'); if (!urls.has(c.id)) urls.set(c.id, URL.createObjectURL(c.blob)); th.src = urls.get(c.id); }
+    else { th = document.createElement('div'); th.textContent = c.kind; }
+    th.className = 'thumb';
+    const txt = document.createElement('div'); txt.className = 'txt';
+    const a = document.createElement('div'); a.textContent = c.text || (c.ctx && (c.ctx.post || c.ctx.title)) || c.kind;
+    const m = document.createElement('div'); m.className = 'meta';
+    m.textContent = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + ' · ' + c.device + (c.filed ? ' · filed' : '');
+    txt.append(a, m);
+    const dot = document.createElement('div'); dot.className = 'dot' + (c.synced ? ' on' : '');
+    row.append(th, txt, dot); list.append(row);
+  }
+}
+
+// ---------- sign-in
+function show() { $('signin').hidden = !!token; $('home').hidden = !token; if (token) { render(); drain(); loadRemote(); } }
+function signOut() { token = null; localStorage.removeItem('token'); show(); }
+$('signin').onsubmit = async e => {
+  e.preventDefault();
+  const t = $('token').value.trim(); if (!t) return;
+  $('err').textContent = '';
+  try {
+    const r = await fetch(API, { headers: headers(t) });
+    if (!r.ok) throw new Error(r.status === 401 || r.status === 404 ? 'This token cannot reach the inbox' : 'GitHub answered ' + r.status);
+    token = t; localStorage.setItem('token', t); $('token').value = ''; show();
+  } catch (x) { $('err').textContent = x.message; }
+};
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+show();
+</script>
+</body>
+</html>
