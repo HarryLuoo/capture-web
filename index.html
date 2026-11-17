@@ -42,6 +42,16 @@ button { font:inherit; color:inherit; border:0; background:none; cursor:pointer;
 #dock { position:fixed; left:0; right:0; bottom:0; padding:10px 12px calc(10px + env(safe-area-inset-bottom)); background:var(--bg); border-top:1px solid var(--line); display:flex; gap:8px; align-items:flex-end; }
 #dock textarea { resize:none; max-height:110px; }
 #send { background:var(--accent); color:#fff; border-radius:12px; width:52px; height:50px; flex:none; font-size:20px; }
+#detail { position:fixed; inset:0; background:rgba(0,0,0,.45); display:flex; align-items:flex-end; justify-content:center; z-index:5; }
+#sheet { background:var(--bg); width:min(640px,100%); max-height:88%; overflow-y:auto; border-radius:18px 18px 0 0; padding:14px 18px calc(24px + env(safe-area-inset-bottom)); }
+#detailClose { float:right; color:var(--accent); padding:4px 0 10px 16px; }
+#detailBody .words { font-size:18px; line-height:1.4; margin:10px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
+#detailBody blockquote { margin:10px 0; padding:8px 12px; border-left:3px solid var(--line); color:var(--dim); white-space:pre-wrap; overflow-wrap:anywhere; }
+#detailBody .src { display:block; color:var(--accent); margin:10px 0; overflow-wrap:anywhere; }
+#detailBody .media { color:var(--dim); font-size:13px; margin-top:10px; }
+#detailBody img { max-width:100%; border-radius:12px; display:block; }
+#detailBody audio { width:100%; }
+.row { cursor:pointer; }
 #toast { position:fixed; left:50%; bottom:calc(84px + env(safe-area-inset-bottom)); transform:translateX(-50%); background:var(--fg); color:var(--bg); padding:9px 14px; border-radius:999px; font-size:13px; max-width:86%; }
 </style>
 </head>
@@ -66,6 +76,7 @@ button { font:inherit; color:inherit; border:0; background:none; cursor:pointer;
   <textarea id="text" rows="1"></textarea>
   <button id="send">↑</button>
 </div>
+<div id="detail" hidden><div id="sheet"><button id="detailClose">Close</button><div id="detailBody"></div></div></div>
 <div id="toast" hidden></div>
 <input id="cam" type="file" accept="image/*" capture="environment" hidden>
 <input id="pick" type="file" accept="image/*" hidden>
@@ -199,10 +210,38 @@ $('speak').onclick = async () => {
   } catch (e) { toast('Microphone: ' + e.message); }
 };
 
-// ---------- previous entries: this device's queue + what other devices sent + the kept log
-let remote = [];
-const raw = async path => { const r = await fetch(API + '/contents/' + path, { headers: { ...headers(token), Accept: 'application/vnd.github.raw+json' } }); return r.ok ? r.text() : null; };
-async function loadRemote() {
+// ---------- entries from every device: this device's queue + the inbox (checked every 10 s) + the kept log
+let remote = [], logRows = [], etag = null;
+const jsonCache = new Map();   // file name -> parsed record
+const api = (path, accept) => fetch(API + '/contents/' + path, { headers: { ...headers(token), Accept: accept || 'application/vnd.github+json' } });
+const raw = async path => { const r = await api(path, 'application/vnd.github.raw+json'); return r.ok ? r.text() : null; };
+
+function fromShortcut(stem, files) {   // i-<yyyyMMdd-HHmmss>-<kind>.<ext>, written by the iPhone Shortcut
+  const m = stem.match(/^i-(\d{4})(\d\d)(\d\d)-(\d\d)(\d\d)(\d\d)-(\w+)$/);
+  if (!m) return null;
+  const media = files.find(f => !f.endsWith('.txt'));
+  return { id: stem, created_at: new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5], +m[6]).toISOString(), device: 'iphone', kind: m[7],
+           file_path: media ? 'captures/' + media : null, text: null, ctx: null, synced: true, txt: files.find(f => f.endsWith('.txt')) || null };
+}
+async function loadInbox() {
+  if (!token || !navigator.onLine || document.hidden) return;
+  try {
+    const r = await fetch(API + '/contents/captures', { headers: { ...headers(token), ...(etag ? { 'If-None-Match': etag } : {}) } });
+    if (r.status === 304) return;
+    if (r.status === 404) { remote = []; render(); return; }
+    if (!r.ok) return;
+    etag = r.headers.get('ETag');
+    const names = (await r.json()).map(f => f.name), out = [], stems = {};
+    for (const n of names) if (n.startsWith('i-')) (stems[n.replace(/\.[^.]+$/, '')] ||= []).push(n);
+    for (const [stem, files] of Object.entries(stems)) { const c = fromShortcut(stem, files); if (c) out.push(c); }
+    await Promise.all(names.filter(n => n.endsWith('.json')).map(async n => {
+      if (!jsonCache.has(n)) { const t = await raw('captures/' + n); if (t) try { const j = JSON.parse(t); if (j.id && j.created_at) jsonCache.set(n, j); } catch {} }
+      if (jsonCache.has(n)) out.push({ ...jsonCache.get(n), synced: true });
+    }));
+    remote = out; render();
+  } catch {}
+}
+async function loadLog() {
   if (!token || !navigator.onLine) return;
   try {
     const out = [], now = new Date();
@@ -210,30 +249,31 @@ async function loadRemote() {
       const t = await raw(`log/${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}.jsonl`);
       if (t) for (const l of t.split('\n')) if (l.trim()) try { out.push({ ...JSON.parse(l), synced: true, filed: true }); } catch {}
     }
-    const r = await fetch(API + '/contents/captures', { headers: headers(token) });
-    if (r.ok) for (const f of (await r.json()).filter(f => f.name.endsWith('.json')).slice(-40)) {
-      const t = await raw('captures/' + f.name);
-      if (t) try { out.push({ ...JSON.parse(t), synced: true }); } catch {}
-    }
-    remote = out; render();
+    logRows = out; render();
   } catch {}
 }
+const loadRemote = () => { loadInbox(); loadLog(); };
+setInterval(loadInbox, 10000);
+setInterval(loadLog, 300000);
+
 const urls = new Map();
+let shown = [];
 async function render() {
   const mine = await qAll(), seen = new Set(mine.map(c => c.id));
-  const all = [...mine, ...remote.filter(c => !seen.has(c.id))].sort((a, b) => a.created_at < b.created_at ? 1 : -1).slice(0, 300);
+  const rest = [...remote, ...logRows.filter(c => !remote.some(r => r.id === c.id))].filter(c => !seen.has(c.id));
+  shown = [...mine, ...rest].sort((a, b) => a.created_at < b.created_at ? 1 : -1).slice(0, 300);
   const list = $('list'); list.textContent = '';
   let day = '';
-  for (const c of all) {
+  for (const c of shown) {
     const d = new Date(c.created_at), label = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
     if (label !== day) { day = label; const h = document.createElement('div'); h.className = 'day'; h.textContent = label; list.append(h); }
-    const row = document.createElement('div'); row.className = 'row';
+    const row = document.createElement('div'); row.className = 'row'; row.onclick = () => detail(c);
     let th;
     if (c.blob && c.kind !== 'voice') { th = document.createElement('img'); if (!urls.has(c.id)) urls.set(c.id, URL.createObjectURL(c.blob)); th.src = urls.get(c.id); }
     else { th = document.createElement('div'); th.textContent = c.kind; }
     th.className = 'thumb';
     const txt = document.createElement('div'); txt.className = 'txt';
-    const a = document.createElement('div'); a.textContent = c.text || (c.ctx && (c.ctx.post || c.ctx.title)) || c.kind;
+    const a = document.createElement('div'); a.textContent = c.text || (c.ctx && (c.ctx.selection || c.ctx.post || c.ctx.title)) || c.kind;
     const m = document.createElement('div'); m.className = 'meta';
     m.textContent = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) + ' · ' + c.device + (c.filed ? ' · filed' : '');
     txt.append(a, m);
@@ -241,6 +281,46 @@ async function render() {
     row.append(th, txt, dot); list.append(row);
   }
 }
+
+// ---------- details: tap an entry
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+async function mediaBlob(c) {
+  if (c.blob) return c.blob;
+  if (!c.file_path || c.filed) return null;          // filed captures keep their file on the Mac, not in the inbox
+  const r = await api(c.file_path, 'application/vnd.github.raw+json');
+  return r.ok ? r.blob() : null;
+}
+async function detail(c) {
+  const box = $('detailBody'); box.textContent = '';
+  const d = new Date(c.created_at);
+  box.append(el('div', 'meta', d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }) + ' · ' + c.device + ' · ' + c.kind + (c.filed ? ' · filed' : c.synced ? '' : ' · waiting to upload')));
+  const words = el('div', 'words', c.text || ''); box.append(words);
+  const x = c.ctx || {};
+  if (x.selection) box.append(el('blockquote', '', x.selection));
+  if (x.post) box.append(el('blockquote', '', (x.author ? x.author + '\n' : '') + x.post + (x.quoted ? '\n\n' + x.quoted : '')));
+  if (x.url) { const a = el('a', 'src', x.title || x.url); a.href = x.url; a.target = '_blank'; a.rel = 'noopener'; box.append(a); }
+  else if (x.app || x.title) box.append(el('div', 'meta', [x.app, x.title].filter(Boolean).join(' · ')));
+  const slot = el('div', 'media'); box.append(slot);
+  $('detail').hidden = false;
+  if (c.txt && !c.text) raw('captures/' + c.txt).then(t => {       // words typed in the Shortcut
+    if (!t) return;
+    const w = t.split('\n').filter(l => !l.startsWith('u:')).join('\n').replace(/^w:/, '').trim();
+    const u = (t.split('\n').find(l => l.startsWith('u:')) || '').slice(2).trim();
+    if (w) words.textContent = w;
+    if (u) { const a = el('a', 'src', u); a.href = u; a.target = '_blank'; a.rel = 'noopener'; box.insertBefore(a, slot); }
+  });
+  if (c.file_path || c.blob) {
+    slot.textContent = c.filed && !c.blob ? 'The file is on the Mac and in your vault.' : 'Loading…';
+    const b = await mediaBlob(c);
+    if (b) {
+      slot.textContent = '';
+      const url = URL.createObjectURL(b), audio = c.kind === 'voice' || /\.(m4a|webm|mp3|wav)$/.test(c.file_path || '');
+      const m = el(audio ? 'audio' : 'img'); m.src = url; if (audio) m.controls = true;
+      slot.append(m);
+    } else if (!c.filed) slot.textContent = '';
+  }
+}
+$('detail').onclick = e => { if (e.target.id === 'detail' || e.target.id === 'detailClose') $('detail').hidden = true; };
 
 // ---------- sign-in
 function show() { $('signin').hidden = !!token; $('home').hidden = !token; if (token) { render(); drain(); loadRemote(); } }
