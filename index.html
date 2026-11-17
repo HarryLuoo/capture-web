@@ -221,7 +221,7 @@ async function loadRemote() {
 const urls = new Map();
 async function render() {
   const mine = await qAll(), seen = new Set(mine.map(c => c.id));
-  const all = [...mine, ...remote.filter(c => !seen.has(c.id))].sort((a, b) => a.id < b.id ? 1 : -1).slice(0, 300);
+  const all = [...mine, ...remote.filter(c => !seen.has(c.id))].sort((a, b) => a.created_at < b.created_at ? 1 : -1).slice(0, 300);
   const list = $('list'); list.textContent = '';
   let day = '';
   for (const c of all) {
