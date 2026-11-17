@@ -286,7 +286,7 @@ async function render() {
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 async function mediaBlob(c) {
   if (c.blob) return c.blob;
-  if (!c.file_path || c.filed) return null;          // filed captures keep their file on the Mac, not in the inbox
+  if (!c.file_path) return null;                    // media stays in the inbox for 30 days
   const r = await api(c.file_path, 'application/vnd.github.raw+json');
   return r.ok ? r.blob() : null;
 }
